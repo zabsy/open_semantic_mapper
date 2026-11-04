@@ -1,0 +1,109 @@
+<!--
+  A small furnished room for testing the mapper.
+
+  Conventions:
+    * Every "thing" we want to find later is its own <body>. The body name is
+      the ground-truth label (e.g. "chair", "red_ball"). Geoms inside a body
+      inherit that label, so a table made of 5 boxes is still one "table".
+    * Units are meters. z is up. The room spans x, y in [-4, 4].
+    * The camera is attached to a mocap body so the capture script can move
+      it anywhere without any physics getting in the way.
+-->
+<mujoco model="room">
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.5 0.5 0.5" specular="0 0 0"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <asset>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1="0.55 0.45 0.35" rgb2="0.5 0.4 0.3" width="256" height="256"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="8 8"/>
+    <material name="wall_mat"  rgba="0.85 0.85 0.8 1"/>
+    <material name="wood"      rgba="0.55 0.35 0.2 1"/>
+    <material name="dark_wood" rgba="0.3 0.2 0.12 1"/>
+    <material name="fabric"    rgba="0.2 0.35 0.6 1"/>
+    <material name="black"     rgba="0.05 0.05 0.05 1"/>
+    <material name="green"     rgba="0.15 0.55 0.2 1"/>
+    <material name="terracotta" rgba="0.75 0.4 0.25 1"/>
+    <material name="red"       rgba="0.85 0.1 0.1 1"/>
+    <material name="white"     rgba="0.95 0.95 0.95 1"/>
+    <material name="yellow"    rgba="0.95 0.85 0.2 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" diffuse="0.6 0.6 0.6" castshadow="true"/>
+    <light pos="2 2 3" dir="-0.3 -0.3 -1" diffuse="0.3 0.3 0.3" castshadow="false"/>
+
+    <!-- Structure -->
+    <body name="floor">
+      <geom type="plane" size="4 4 0.1" material="floor_mat"/>
+    </body>
+    <body name="wall">
+      <geom type="box" pos="0  4 1.25" size="4 0.05 1.25" material="wall_mat"/>
+      <geom type="box" pos="0 -4 1.25" size="4 0.05 1.25" material="wall_mat"/>
+      <geom type="box" pos=" 4 0 1.25" size="0.05 4 1.25" material="wall_mat"/>
+      <geom type="box" pos="-4 0 1.25" size="0.05 4 1.25" material="wall_mat"/>
+    </body>
+
+    <!-- Furniture and objects -->
+    <body name="table" pos="1.5 1.5 0">
+      <geom type="box" pos="0 0 0.74" size="0.6 0.4 0.03" material="wood"/>
+      <geom type="box" pos=" 0.55  0.35 0.36" size="0.03 0.03 0.36" material="wood"/>
+      <geom type="box" pos="-0.55  0.35 0.36" size="0.03 0.03 0.36" material="wood"/>
+      <geom type="box" pos=" 0.55 -0.35 0.36" size="0.03 0.03 0.36" material="wood"/>
+      <geom type="box" pos="-0.55 -0.35 0.36" size="0.03 0.03 0.36" material="wood"/>
+    </body>
+
+    <body name="mug" pos="1.3 1.4 0.77">
+      <geom type="cylinder" pos="0 0 0.05" size="0.04 0.05" material="white"/>
+    </body>
+
+    <body name="chair" pos="1.5 0.7 0">
+      <geom type="box" pos="0 0 0.45" size="0.22 0.22 0.025" material="dark_wood"/>
+      <geom type="box" pos="0 -0.2 0.75" size="0.22 0.02 0.28" material="dark_wood"/>
+      <geom type="box" pos=" 0.19  0.19 0.22" size="0.02 0.02 0.22" material="dark_wood"/>
+      <geom type="box" pos="-0.19  0.19 0.22" size="0.02 0.02 0.22" material="dark_wood"/>
+      <geom type="box" pos=" 0.19 -0.19 0.22" size="0.02 0.02 0.22" material="dark_wood"/>
+      <geom type="box" pos="-0.19 -0.19 0.22" size="0.02 0.02 0.22" material="dark_wood"/>
+    </body>
+
+    <body name="sofa" pos="-2.8 0 0">
+      <geom type="box" pos="0 0 0.25" size="0.45 1.1 0.2" material="fabric"/>
+      <geom type="box" pos="-0.35 0 0.6" size="0.1 1.1 0.3" material="fabric"/>
+      <geom type="box" pos="0  1.05 0.5" size="0.45 0.1 0.15" material="fabric"/>
+      <geom type="box" pos="0 -1.05 0.5" size="0.45 0.1 0.15" material="fabric"/>
+    </body>
+
+    <body name="tv" pos="3.8 -1.0 0">
+      <geom type="box" pos="0 0 0.25" size="0.2 0.6 0.25" material="dark_wood"/>
+      <geom type="box" pos="0 0 0.95" size="0.03 0.55 0.33" material="black"/>
+    </body>
+
+    <body name="bookshelf" pos="-1.5 3.75 0">
+      <geom type="box" pos="0 0 0.9" size="0.5 0.15 0.9" material="wood"/>
+      <geom type="box" pos="-0.3 -0.05 1.15" size="0.15 0.12 0.12" material="red"/>
+      <geom type="box" pos=" 0.2 -0.05 0.6"  size="0.2 0.12 0.12" material="yellow"/>
+    </body>
+
+    <body name="plant" pos="3.2 3.2 0">
+      <geom type="cylinder" pos="0 0 0.2" size="0.18 0.2" material="terracotta"/>
+      <geom type="ellipsoid" pos="0 0 0.75" size="0.3 0.3 0.4" material="green"/>
+    </body>
+
+    <body name="lamp" pos="-3.3 -2.6 0">
+      <geom type="cylinder" pos="0 0 0.02" size="0.18 0.02" material="black"/>
+      <geom type="cylinder" pos="0 0 0.8" size="0.02 0.8" material="black"/>
+      <geom type="cylinder" pos="0 0 1.65" size="0.2 0.15" material="yellow"/>
+    </body>
+
+    <body name="red_ball" pos="0.5 -2.0 0.15">
+      <geom type="sphere" size="0.15" material="red"/>
+    </body>
+
+    <!-- Camera rig: a mocap body we teleport each frame. -->
+    <body name="cam_rig" mocap="true" pos="0 0 1.4">
+      <camera name="rgbd" fovy="60" pos="0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>

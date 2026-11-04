@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Generated data and outputs
+data/
+outputs/
+*.ply
