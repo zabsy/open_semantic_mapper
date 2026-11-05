@@ -75,8 +75,8 @@ class ObjectMap:
         voxel        resolution of each object's stored points (meters)
         assoc_voxel  coarser grid used to compare a mask with objects; coarse cells
                      tolerate small depth or pose noise
-        min_overlap  fraction of a mask's cells that must already belong to an
-                     object for the mask to be merged into it
+        min_overlap  share of cells two sets must have in common (relative to the
+                     smaller set) for a mask to be merged into an object
         min_pixels   masks smaller than this are ignored (too noisy to trust)
         """
         self.K = K
@@ -85,15 +85,35 @@ class ObjectMap:
         self.min_overlap = min_overlap
         self.min_pixels = min_pixels
         self.objects: list[MapObject] = []
+        self._next_id = 0
 
-    def associate(self, keys: set) -> MapObject | None:
-        """Existing object that overlaps these cells the most, if enough."""
-        best, best_overlap = None, 0.0
+    def associate(self, keys: set) -> list[MapObject]:
+        """All existing objects this mask overlaps enough, best match first.
+
+        Overlap is measured against the SMALLER of the two cell sets. When an
+        object slides into view, the first frame sees only an edge; the next
+        frame's mask contains that edge plus much more. Relative to the smaller
+        set (the edge) the overlap is high, so they still match.
+        """
+        scored = []
         for obj in self.objects:
-            overlap = len(keys & obj.keys) / len(keys)
-            if overlap > best_overlap:
-                best, best_overlap = obj, overlap
-        return best if best_overlap >= self.min_overlap else None
+            shared = len(keys & obj.keys)
+            if shared:
+                score = shared / min(len(keys), len(obj.keys))
+                if score >= self.min_overlap:
+                    scored.append((score, obj))
+        scored.sort(key=lambda t: -t[0])
+        return [obj for _, obj in scored]
+
+    def merge(self, target: MapObject, other: MapObject) -> None:
+        """Fold `other` into `target` and drop it from the map."""
+        target.points, target.colors = voxel_downsample(
+            np.concatenate([target.points, other.points]),
+            np.concatenate([target.colors, other.colors]), self.voxel)
+        target.keys |= other.keys
+        target.observations += other.observations
+        target.gt_votes += other.gt_votes
+        self.objects.remove(other)
 
     def integrate(self, frame: Frame, masks: list[np.ndarray],
                   gt_labels: list[str] | None = None) -> None:
@@ -106,11 +126,17 @@ class ObjectMap:
             pts, cols = voxel_downsample(pts, frame.rgb[valid], self.voxel)
             keys = voxel_keys(pts, self.assoc_voxel)
 
-            obj = self.associate(keys)
-            if obj is None:
-                obj = MapObject(id=len(self.objects), points=pts, colors=cols)
+            matches = self.associate(keys)
+            if not matches:
+                obj = MapObject(id=self._next_id, points=pts, colors=cols)
+                self._next_id += 1
                 self.objects.append(obj)
             else:
+                # A mask touching several objects means they were pieces of one
+                # thing seen from different angles: join them.
+                obj = matches[0]
+                for other in matches[1:]:
+                    self.merge(obj, other)
                 obj.points, obj.colors = voxel_downsample(
                     np.concatenate([obj.points, pts]),
                     np.concatenate([obj.colors, cols]), self.voxel)
@@ -170,6 +196,9 @@ def main() -> None:
         frame = seq[i]
         masks, names = gt_masks(frame, seq.labels)
         omap.integrate(frame, masks, names)
+
+    for new_id, obj in enumerate(omap.objects):  # merges leave gaps in ids
+        obj.id = new_id
 
     args.out.mkdir(parents=True, exist_ok=True)
     summaries = [o.summary() for o in omap.objects]
