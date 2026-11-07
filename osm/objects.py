@@ -16,6 +16,7 @@ Writes
     objects.json        one entry per object: size, position, observations, grading
     objects.ply         point cloud colored by object
     objects_topdown.png bird's-eye view colored by object
+    masks.npz           each observation's mask, cropped to its bounding box
 """
 
 from __future__ import annotations
@@ -39,6 +40,10 @@ class Observation:
     frame: int
     bbox: tuple[int, int, int, int]  # u_min, v_min, u_max, v_max in pixels
     pixels: int
+    mask: np.ndarray                 # (v_max - v_min + 1, u_max - u_min + 1) bool, the region inside bbox
+
+    def to_json(self) -> dict:
+        return {"frame": self.frame, "bbox": list(self.bbox), "pixels": self.pixels}
 
 
 @dataclass
@@ -143,9 +148,9 @@ class ObjectMap:
             obj.keys |= keys
 
             v, u = np.nonzero(mask)
-            obj.observations.append(Observation(frame.index,
-                                                (int(u.min()), int(v.min()), int(u.max()), int(v.max())),
-                                                int(mask.sum())))
+            u0, v0, u1, v1 = int(u.min()), int(v.min()), int(u.max()), int(v.max())
+            obj.observations.append(Observation(frame.index, (u0, v0, u1, v1), int(mask.sum()),
+                                                mask[v0:v1 + 1, u0:u1 + 1].copy()))
             if gt_labels is not None:
                 obj.gt_votes[gt_labels[i]] += int(mask.sum())
 
@@ -204,8 +209,11 @@ def main() -> None:
     summaries = [o.summary() for o in omap.objects]
     (args.out / "objects.json").write_text(json.dumps(
         {"objects": summaries,
-         "observations": {o.id: [vars(ob) for ob in o.observations] for o in omap.objects}},
+         "observations": {o.id: [ob.to_json() for ob in o.observations] for o in omap.objects}},
         indent=1))
+    # Keyed "<object id>/<observation index>", same order as in objects.json.
+    np.savez_compressed(args.out / "masks.npz", **{
+        f"{o.id}/{i}": ob.mask for o in omap.objects for i, ob in enumerate(o.observations)})
 
     pal = object_palette(len(omap.objects))
     pts = np.concatenate([o.points for o in omap.objects])
