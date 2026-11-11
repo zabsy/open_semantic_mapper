@@ -51,12 +51,14 @@ def evaluate(searcher: Searcher, labels: dict[int, str], verbose: bool = True) -
     top1 = top3 = mrr = 0.0
     for query, correct in QUERIES.items():
         ranked = [labels[oid] for oid, _, _ in searcher.rank(query)]
-        rank = next(i for i, name in enumerate(ranked, 1) if name in correct)
-        top1 += rank == 1
-        top3 += rank <= 3
-        mrr += 1 / rank
+        # If the right object never made it into the map, it can't be found.
+        rank = next((i for i, name in enumerate(ranked, 1) if name in correct), None)
+        if rank is not None:
+            top1 += rank == 1
+            top3 += rank <= 3
+            mrr += 1 / rank
         if verbose:
-            mark = "ok " if rank == 1 else f"#{rank:<2d}"
+            mark = "--" if rank is None else "ok " if rank == 1 else f"#{rank:<2d}"
             print(f"  {mark} {query:30s} -> {', '.join(ranked[:3])}")
     n = len(QUERIES)
     return {"top1": top1 / n, "top3": top3 / n, "mrr": mrr / n, "queries": n}
