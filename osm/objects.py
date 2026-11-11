@@ -2,13 +2,20 @@
 
 Each frame is split into masks (regions). For every mask we
     1. back-project its pixels to 3D world points,
-    2. find the existing object it overlaps most in 3D (data association),
-    3. merge into that object, or start a new object if nothing overlaps enough.
+    2. find the existing objects it overlaps in 3D (data association),
+    3. if several, pick the one that looks most alike (CLIP similarity),
+    4. merge into it, or start a new object if it overlaps nothing.
+
+Why both geometry and appearance: a learned segmenter is inconsistent. One
+frame gives "sofa back" and "sofa seat", another gives the whole sofa; one
+frame gives the mug alone, another gives "table with mug". In 3D both cases
+look the same (one region covering two objects), but sofa parts look alike
+while a mug and a table do not.
 
 The mapper does NOT use the simulator's object ids to decide what belongs
 together. A learned segmenter (e.g. SAM) produces anonymous masks whose ids
-mean nothing across frames, so association has to come from geometry. The
-ground-truth ids are carried along only to grade the result afterwards.
+mean nothing across frames, so association has to come from the masks
+themselves. The ground-truth ids are carried along only to grade the result.
 
 Usage:
     python -m osm.objects --data data/room0 --out outputs/room0
@@ -32,6 +39,7 @@ import imageio.v3 as iio
 import numpy as np
 
 from osm.build_cloud import render_topdown, save_ply
+from osm.clip_features import Clip, embed_masks
 from osm.geometry import Frame, Intrinsics, Sequence, backproject, voxel_downsample
 
 
@@ -55,6 +63,14 @@ class MapObject:
     keys: set = field(default_factory=set)  # coarse voxels it occupies, for association
     observations: list[Observation] = field(default_factory=list)
     gt_votes: Counter = field(default_factory=Counter)  # grading only
+    feature_sum: np.ndarray | None = None   # sum of CLIP vectors of its masks
+
+    @property
+    def feature(self) -> np.ndarray | None:
+        """Average appearance, unit length."""
+        if self.feature_sum is None:
+            return None
+        return self.feature_sum / np.linalg.norm(self.feature_sum)
 
     def summary(self) -> dict:
         lo, hi = self.points.min(0), self.points.max(0)
@@ -76,7 +92,8 @@ def voxel_keys(points: np.ndarray, size: float) -> set:
 
 class ObjectMap:
     def __init__(self, K: Intrinsics, voxel: float = 0.02, assoc_voxel: float = 0.05,
-                 min_overlap: float = 0.5, min_pixels: int = 100):
+                 min_overlap: float = 0.5, min_pixels: int = 100,
+                 min_similarity: float = 0.85):
         """
         voxel        resolution of each object's stored points (meters)
         assoc_voxel  coarser grid used to compare a mask with objects; coarse cells
@@ -84,32 +101,50 @@ class ObjectMap:
         min_overlap  share of cells two sets must have in common (relative to the
                      smaller set) for a mask to be merged into an object
         min_pixels   masks smaller than this are ignored (too noisy to trust)
+        min_similarity   CLIP similarity two objects need for one mask covering
+                         both to merge them (sofa parts ~0.88; mug vs table ~0.68,
+                         but up to 0.76 after an ambiguous mug+table mask)
         """
         self.K = K
         self.voxel = voxel
         self.assoc_voxel = assoc_voxel
         self.min_overlap = min_overlap
         self.min_pixels = min_pixels
+        self.min_similarity = min_similarity
         self.objects: list[MapObject] = []
         self._next_id = 0
 
-    def associate(self, keys: set) -> list[MapObject]:
-        """All existing objects this mask overlaps enough, best match first.
+    def associate(self, keys: set, feature: np.ndarray | None = None) -> list[MapObject]:
+        """Existing objects this mask matches, best match first.
 
-        Overlap is measured against the SMALLER of the two cell sets. When an
-        object slides into view, the first frame sees only an edge; the next
-        frame's mask contains that edge plus much more. Relative to the smaller
-        set (the edge) the overlap is high, so they still match.
+        Geometry: overlap is measured against the SMALLER of the two cell sets.
+        When an object slides into view, the first frame sees only an edge; the
+        next frame's mask contains that edge plus much more. Relative to the
+        smaller set (the edge) the overlap is high, so they still match.
+
+        Appearance (if a feature is given) only ranks the candidates: a mug
+        mask overlaps both the mug and the table under it in 3D, and looks
+        more like the mug. It never rejects the only candidate, because views
+        of one object can look quite different (a table from two angles
+        scored as low as 0.66, about as low as mug vs table).
         """
         scored = []
         for obj in self.objects:
             shared = len(keys & obj.keys)
             if shared:
                 score = shared / min(len(keys), len(obj.keys))
-                if score >= self.min_overlap:
-                    scored.append((score, obj))
+                if score < self.min_overlap:
+                    continue
+                if feature is not None:
+                    score = float(feature @ obj.feature)
+                scored.append((score, obj))
         scored.sort(key=lambda t: -t[0])
         return [obj for _, obj in scored]
+
+    def similar(self, a: MapObject, b: MapObject, threshold: float) -> bool:
+        if a.feature is None or b.feature is None:
+            return True  # no appearance information: geometry alone decides
+        return float(a.feature @ b.feature) >= threshold
 
     def merge(self, target: MapObject, other: MapObject) -> None:
         """Fold `other` into `target` and drop it from the map."""
@@ -119,17 +154,25 @@ class ObjectMap:
         target.keys |= other.keys
         target.observations += other.observations
         target.gt_votes += other.gt_votes
+        if other.feature_sum is not None:
+            target.feature_sum = other.feature_sum if target.feature_sum is None \
+                else target.feature_sum + other.feature_sum
         self.objects.remove(other)
 
     def integrate(self, frame: Frame, masks: list[np.ndarray],
+                  features: np.ndarray | None = None,
                   gt_names: dict[int, str] | None = None) -> None:
         """Add one frame. `masks` are (H, W) bool arrays, one per region.
+
+        `features` (optional) holds one CLIP vector per mask. Without it,
+        association uses geometry only.
 
         If `gt_names` is given, the frame's ground-truth segmentation is used to
         record which real objects each mask covered. That is for grading only;
         it never influences association.
         """
-        for mask in masks:
+        for i, mask in enumerate(masks):
+            feature = None if features is None else features[i]
             mask = mask & (frame.depth > 0)
             if mask.sum() < self.min_pixels:
                 continue
@@ -137,21 +180,25 @@ class ObjectMap:
             pts, cols = voxel_downsample(pts, frame.rgb[valid], self.voxel)
             keys = voxel_keys(pts, self.assoc_voxel)
 
-            matches = self.associate(keys)
+            matches = self.associate(keys, feature)
             if not matches:
                 obj = MapObject(id=self._next_id, points=pts, colors=cols)
                 self._next_id += 1
                 self.objects.append(obj)
             else:
-                # A mask touching several objects means they were pieces of one
-                # thing seen from different angles: join them.
+                # A mask covering several objects that look alike means they
+                # were pieces of one thing seen from different angles: join them.
                 obj = matches[0]
                 for other in matches[1:]:
-                    self.merge(obj, other)
+                    if self.similar(obj, other, self.min_similarity):
+                        self.merge(obj, other)
                 obj.points, obj.colors = voxel_downsample(
                     np.concatenate([obj.points, pts]),
                     np.concatenate([obj.colors, cols]), self.voxel)
             obj.keys |= keys
+            if feature is not None:
+                obj.feature_sum = feature.copy() if obj.feature_sum is None \
+                    else obj.feature_sum + feature
 
             v, u = np.nonzero(mask)
             u0, v0, u1, v1 = int(u.min()), int(v.min()), int(u.max()), int(v.max())
@@ -212,14 +259,19 @@ def main() -> None:
     parser.add_argument("--segmentation", default="gt",
                         help="'gt' for simulator masks, or a folder inside --data "
                              "with label images (e.g. 'sam' from osm.segment)")
+    parser.add_argument("--geometry-only", action="store_true",
+                        help="associate by 3D overlap alone, without CLIP")
     args = parser.parse_args()
 
     seq = Sequence(args.data)
     omap = ObjectMap(seq.K)
+    clip = None if args.geometry_only else Clip()
     for i in range(len(seq)):
         frame = seq[i]
         masks = split_labels(load_segmentation(args.data, frame, args.segmentation))
-        omap.integrate(frame, masks, seq.labels)
+        masks = [m for m in masks if (m & (frame.depth > 0)).sum() >= omap.min_pixels]
+        features = None if clip is None or not masks else embed_masks(clip, frame.rgb, masks)
+        omap.integrate(frame, masks, features, seq.labels)
 
     for new_id, obj in enumerate(omap.objects):  # merges leave gaps in ids
         obj.id = new_id
