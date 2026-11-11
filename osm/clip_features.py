@@ -110,6 +110,19 @@ def masked_image(rgb: np.ndarray, bbox: tuple[int, int, int, int], mask: np.ndar
     return out
 
 
+def embed_masks(clip: Clip, rgb: np.ndarray, masks: list[np.ndarray]) -> np.ndarray:
+    """One unit vector per mask in a single frame (context + masked crop, added)."""
+    context, masked = [], []
+    for m in masks:
+        v, u = np.nonzero(m)
+        bbox = (int(u.min()), int(v.min()), int(u.max()), int(v.max()))
+        u0, v0, u1, v1 = bbox
+        context.append(crop(rgb, bbox))
+        masked.append(crop(masked_image(rgb, bbox, m[v0:v1 + 1, u0:u1 + 1]), bbox))
+    emb = clip.images(context + masked)
+    return _normalize(emb[:len(masks)] + emb[len(masks):])
+
+
 def embed_objects(seq: Sequence, objects_json: dict, masks: dict, clip: Clip, k: int = 5
                   ) -> tuple[np.ndarray, np.ndarray, dict[int, list[np.ndarray]]]:
     ids, feats, all_crops = [], [], {}
