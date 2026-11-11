@@ -12,6 +12,12 @@ frame gives the mug alone, another gives "table with mug". In 3D both cases
 look the same (one region covering two objects), but sofa parts look alike
 while a mug and a table do not.
 
+Appearance is not enough for everything: in this room most surfaces are brown
+wood, and CLIP rates "floor" and "chair" as 0.93 alike. So pieces of flat
+surfaces (a segmenter cuts a tiled floor into one region per tile) are joined
+by geometry instead: every few frames, touching objects that are flat and lie
+on the same plane are merged.
+
 The mapper does NOT use the simulator's object ids to decide what belongs
 together. A learned segmenter (e.g. SAM) produces anonymous masks whose ids
 mean nothing across frames, so association has to come from the masks
@@ -93,7 +99,7 @@ def voxel_keys(points: np.ndarray, size: float) -> set:
 class ObjectMap:
     def __init__(self, K: Intrinsics, voxel: float = 0.02, assoc_voxel: float = 0.05,
                  min_overlap: float = 0.5, min_pixels: int = 100,
-                 min_similarity: float = 0.85):
+                 min_similarity: float = 0.85, plane_tolerance: float = 0.01):
         """
         voxel        resolution of each object's stored points (meters)
         assoc_voxel  coarser grid used to compare a mask with objects; coarse cells
@@ -104,6 +110,8 @@ class ObjectMap:
         min_similarity   CLIP similarity two objects need for one mask covering
                          both to merge them (sofa parts ~0.88; mug vs table ~0.68,
                          but up to 0.76 after an ambiguous mug+table mask)
+        plane_tolerance  an object counts as flat if its points are within
+                         this many meters (RMS) of their best-fit plane
         """
         self.K = K
         self.voxel = voxel
@@ -111,6 +119,7 @@ class ObjectMap:
         self.min_overlap = min_overlap
         self.min_pixels = min_pixels
         self.min_similarity = min_similarity
+        self.plane_tolerance = plane_tolerance
         self.objects: list[MapObject] = []
         self._next_id = 0
 
@@ -145,6 +154,46 @@ class ObjectMap:
         if a.feature is None or b.feature is None:
             return True  # no appearance information: geometry alone decides
         return float(a.feature @ b.feature) >= threshold
+
+    def plane(self, obj: MapObject) -> tuple[np.ndarray, np.ndarray] | None:
+        """(point on plane, unit normal) if the object is flat, else None.
+
+        The best-fit plane passes through the centroid; its normal is the
+        direction in which the points vary least (smallest singular vector).
+        """
+        if len(obj.points) < 10:
+            return None
+        center = obj.points.mean(axis=0)
+        _, sv, vt = np.linalg.svd(obj.points - center, full_matrices=False)
+        rms = sv[-1] / np.sqrt(len(obj.points))
+        return (center, vt[-1]) if rms <= self.plane_tolerance else None
+
+    def merge_coplanar(self, max_angle_cos: float = 0.98, max_offset: float = 0.02) -> int:
+        """Merge touching flat objects that lie on the same plane. Returns merges done.
+
+        Two planes are the same if their normals are parallel and one plane's
+        center lies within `max_offset` meters of the other plane.
+        """
+        merged = 0
+        planes = {id(o): self.plane(o) for o in self.objects}
+        changed = True
+        while changed:
+            changed = False
+            flat = [o for o in self.objects if planes[id(o)] is not None]
+            for i, a in enumerate(flat):
+                ca, na = planes[id(a)]
+                for b in flat[i + 1:]:
+                    cb, nb = planes[id(b)]
+                    if abs(na @ nb) >= max_angle_cos and abs(na @ (cb - ca)) <= max_offset \
+                            and a.keys & b.keys:
+                        self.merge(a, b)
+                        planes[id(a)] = self.plane(a)
+                        merged += 1
+                        changed = True
+                        break
+                if changed:
+                    break
+        return merged
 
     def merge(self, target: MapObject, other: MapObject) -> None:
         """Fold `other` into `target` and drop it from the map."""
@@ -261,6 +310,8 @@ def main() -> None:
                              "with label images (e.g. 'sam' from osm.segment)")
     parser.add_argument("--geometry-only", action="store_true",
                         help="associate by 3D overlap alone, without CLIP")
+    parser.add_argument("--merge-every", type=int, default=10,
+                        help="merge touching coplanar objects every N frames")
     args = parser.parse_args()
 
     seq = Sequence(args.data)
@@ -272,6 +323,9 @@ def main() -> None:
         masks = [m for m in masks if (m & (frame.depth > 0)).sum() >= omap.min_pixels]
         features = None if clip is None or not masks else embed_masks(clip, frame.rgb, masks)
         omap.integrate(frame, masks, features, seq.labels)
+        if (i + 1) % args.merge_every == 0:
+            omap.merge_coplanar()
+    omap.merge_coplanar()
 
     for new_id, obj in enumerate(omap.objects):  # merges leave gaps in ids
         obj.id = new_id
