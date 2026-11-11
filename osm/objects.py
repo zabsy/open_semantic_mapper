@@ -12,6 +12,7 @@ ground-truth ids are carried along only to grade the result afterwards.
 
 Usage:
     python -m osm.objects --data data/room0 --out outputs/room0
+    python -m osm.objects --segmentation sam --out outputs/room0_sam
 Writes
     objects.json        one entry per object: size, position, observations, grading
     objects.ply         point cloud colored by object
@@ -121,9 +122,14 @@ class ObjectMap:
         self.objects.remove(other)
 
     def integrate(self, frame: Frame, masks: list[np.ndarray],
-                  gt_labels: list[str] | None = None) -> None:
-        """Add one frame. `masks` are (H, W) bool arrays, one per region."""
-        for i, mask in enumerate(masks):
+                  gt_names: dict[int, str] | None = None) -> None:
+        """Add one frame. `masks` are (H, W) bool arrays, one per region.
+
+        If `gt_names` is given, the frame's ground-truth segmentation is used to
+        record which real objects each mask covered. That is for grading only;
+        it never influences association.
+        """
+        for mask in masks:
             mask = mask & (frame.depth > 0)
             if mask.sum() < self.min_pixels:
                 continue
@@ -151,17 +157,26 @@ class ObjectMap:
             u0, v0, u1, v1 = int(u.min()), int(v.min()), int(u.max()), int(v.max())
             obj.observations.append(Observation(frame.index, (u0, v0, u1, v1), int(mask.sum()),
                                                 mask[v0:v1 + 1, u0:u1 + 1].copy()))
-            if gt_labels is not None:
-                obj.gt_votes[gt_labels[i]] += int(mask.sum())
+            if gt_names is not None:
+                ids, counts = np.unique(frame.seg[mask], return_counts=True)
+                for gid, n in zip(ids, counts):
+                    if gid >= 0:
+                        obj.gt_votes[gt_names[int(gid)]] += int(n)
 
 
-def gt_masks(frame: Frame, labels: dict[int, str]) -> tuple[list[np.ndarray], list[str]]:
-    """Split a ground-truth segmentation image into anonymous masks.
+def split_labels(labels: np.ndarray) -> list[np.ndarray]:
+    """Label image (one id per pixel, -1 = none) -> one bool mask per id.
 
-    The mapper only receives the masks; the label list is for grading.
+    The ids are thrown away: the mapper only gets anonymous regions, whether
+    they came from the simulator or from SAM.
     """
-    ids = [i for i in np.unique(frame.seg) if i >= 0]
-    return [frame.seg == i for i in ids], [labels[int(i)] for i in ids]
+    return [labels == i for i in np.unique(labels) if i >= 0]
+
+
+def load_segmentation(data: Path, frame: Frame, source: str) -> np.ndarray:
+    if source == "gt":
+        return frame.seg
+    return np.load(data / source / f"{frame.index:04d}.npy")
 
 
 def grade(objects: list[MapObject], labels: dict[int, str]) -> str:
@@ -173,7 +188,8 @@ def grade(objects: list[MapObject], labels: dict[int, str]) -> str:
             (more than 1 = one thing got broken into pieces)
     """
     splits = Counter(o.gt_votes.most_common(1)[0][0] for o in objects)
-    lines = [f"{'real object':12s} {'mapped as':>9s} {'purity':>7s}"]
+    lines = [f"{len(objects)} mapped objects for {len(labels)} real objects\n",
+             f"{'real object':12s} {'mapped as':>9s} {'purity':>7s}"]
     for name in labels.values():
         mine = [o for o in objects if o.gt_votes.most_common(1)[0][0] == name]
         if not mine:
@@ -193,14 +209,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data", type=Path, default=Path("data/room0"))
     parser.add_argument("--out", type=Path, default=Path("outputs/room0"))
+    parser.add_argument("--segmentation", default="gt",
+                        help="'gt' for simulator masks, or a folder inside --data "
+                             "with label images (e.g. 'sam' from osm.segment)")
     args = parser.parse_args()
 
     seq = Sequence(args.data)
     omap = ObjectMap(seq.K)
     for i in range(len(seq)):
         frame = seq[i]
-        masks, names = gt_masks(frame, seq.labels)
-        omap.integrate(frame, masks, names)
+        masks = split_labels(load_segmentation(args.data, frame, args.segmentation))
+        omap.integrate(frame, masks, seq.labels)
 
     for new_id, obj in enumerate(omap.objects):  # merges leave gaps in ids
         obj.id = new_id
@@ -221,7 +240,6 @@ def main() -> None:
     save_ply(args.out / "objects.ply", pts, cols)
     iio.imwrite(args.out / "objects_topdown.png", render_topdown(pts, cols, omap.voxel))
 
-    print(f"{len(omap.objects)} objects\n")
     print(f"{'id':>3s} {'gt_label':10s} {'points':>7s} {'views':>5s}  center              size")
     for s in summaries:
         print(f"{s['id']:>3d} {s['gt_label']:10s} {s['points']:>7d} {s['observations']:>5d}  "
