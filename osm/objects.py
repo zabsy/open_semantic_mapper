@@ -343,6 +343,8 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     summaries = [o.summary() for o in omap.objects]
+    for s, o in zip(summaries, omap.objects):
+        s["flat"] = omap.plane(o) is not None  # floor, wall, tabletop-like pieces
     (args.out / "objects.json").write_text(json.dumps(
         {"objects": summaries,
          "observations": {o.id: [ob.to_json() for ob in o.observations] for o in omap.objects}},

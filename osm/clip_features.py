@@ -19,6 +19,10 @@ but looks unnatural (CLIP rarely saw gray cut-outs). Together they are more
 reliable than either alone; on the test room, object names found the right
 object 6/9 times with context crops, 7/9 masked, 8/9 combined.
 
+Flat objects (floor and wall pieces) skip the context crop. A small patch of
+floor next to the plant has the plant in its context crop, and then wins the
+query "a potted plant". For background surfaces the surroundings mislead.
+
 Averaging several views makes the vector more stable: one view of a chair
 from behind can be ambiguous, five views from different angles are not.
 
@@ -139,8 +143,11 @@ def embed_objects(seq: Sequence, objects_json: dict, masks: dict, clip: Clip, k:
             context.append(crop(rgb, ob["bbox"]))
             masked.append(crop(masked_image(rgb, ob["bbox"], mask), ob["bbox"]))
 
-        emb = clip.images(context + masked)
-        vec = emb[:len(views)].mean(axis=0) + emb[len(views):].mean(axis=0)
+        if obj.get("flat"):
+            vec = clip.images(masked).mean(axis=0)
+        else:
+            emb = clip.images(context + masked)
+            vec = emb[:len(views)].mean(axis=0) + emb[len(views):].mean(axis=0)
         ids.append(obj["id"])
         feats.append(vec / np.linalg.norm(vec))
         all_crops[obj["id"]] = context + masked
