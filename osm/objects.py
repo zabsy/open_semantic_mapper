@@ -110,8 +110,7 @@ class ObjectMap:
         min_similarity   CLIP similarity two objects need for one mask covering
                          both to merge them (sofa parts ~0.88; mug vs table ~0.68,
                          but up to 0.76 after an ambiguous mug+table mask)
-        plane_tolerance  an object counts as flat if its points are within
-                         this many meters (RMS) of their best-fit plane
+        plane_tolerance  a point is on a plane if within this many meters of it
         """
         self.K = K
         self.voxel = voxel
@@ -155,18 +154,30 @@ class ObjectMap:
             return True  # no appearance information: geometry alone decides
         return float(a.feature @ b.feature) >= threshold
 
-    def plane(self, obj: MapObject) -> tuple[np.ndarray, np.ndarray] | None:
+    def plane(self, obj: MapObject, min_inliers: float = 0.8
+              ) -> tuple[np.ndarray, np.ndarray] | None:
         """(point on plane, unit normal) if the object is flat, else None.
 
-        The best-fit plane passes through the centroid; its normal is the
+        A best-fit plane passes through the centroid; its normal is the
         direction in which the points vary least (smallest singular vector).
+        Segment edges are imperfect, so a floor piece often carries a few
+        stray points from the table edge next to it. Those would tilt the fit,
+        so we fit twice (the second time ignoring points far from the first
+        plane) and call the object flat if most of its points lie on the plane.
+        Measured on the test room: flat pieces 88-100%, 3D objects at most 30%.
         """
         if len(obj.points) < 10:
             return None
-        center = obj.points.mean(axis=0)
-        _, sv, vt = np.linalg.svd(obj.points - center, full_matrices=False)
-        rms = sv[-1] / np.sqrt(len(obj.points))
-        return (center, vt[-1]) if rms <= self.plane_tolerance else None
+        pts = obj.points
+        for keep in (np.ones(len(pts), bool), None):
+            if keep is None:
+                keep = np.abs((pts - center) @ normal) < 5 * self.plane_tolerance
+                if keep.sum() < 10:
+                    return None
+            center = pts[keep].mean(axis=0)
+            normal = np.linalg.svd(pts[keep] - center, full_matrices=False)[2][-1]
+        inliers = np.abs((pts - center) @ normal) < self.plane_tolerance
+        return (center, normal) if inliers.mean() >= min_inliers else None
 
     def merge_coplanar(self, max_angle_cos: float = 0.98, max_offset: float = 0.02) -> int:
         """Merge touching flat objects that lie on the same plane. Returns merges done.
