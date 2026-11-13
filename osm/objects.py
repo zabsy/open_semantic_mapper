@@ -90,6 +90,18 @@ class MapObject:
                 "gt_purity": round(votes / sum(self.gt_votes.values()), 3)}
 
 
+def erode(mask: np.ndarray, pixels: int) -> np.ndarray:
+    """Shrink a mask by `pixels` on every side (a pixel survives only if its
+    whole 3x3 neighborhood is inside the mask, repeated `pixels` times)."""
+    for _ in range(pixels):
+        p = np.pad(mask, 1)
+        mask = mask.copy()
+        for dv in (0, 1, 2):
+            for du in (0, 1, 2):
+                mask &= p[dv:dv + mask.shape[0], du:du + mask.shape[1]]
+    return mask
+
+
 def voxel_keys(points: np.ndarray, size: float) -> set:
     """Set of voxel cells (as hashable tuples) that the points fall into."""
     cells = np.unique(np.floor(points / size).astype(np.int64), axis=0)
@@ -98,7 +110,7 @@ def voxel_keys(points: np.ndarray, size: float) -> set:
 
 class ObjectMap:
     def __init__(self, K: Intrinsics, voxel: float = 0.02, assoc_voxel: float = 0.05,
-                 min_overlap: float = 0.5, min_pixels: int = 100,
+                 min_overlap: float = 0.5, min_pixels: int = 100, erode_pixels: int = 2,
                  min_similarity: float = 0.85, plane_tolerance: float = 0.01):
         """
         voxel        resolution of each object's stored points (meters)
@@ -107,6 +119,10 @@ class ObjectMap:
         min_overlap  share of cells two sets must have in common (relative to the
                      smaller set) for a mask to be merged into an object
         min_pixels   masks smaller than this are ignored (too noisy to trust)
+        erode_pixels masks are shrunk by this much before their points are stored:
+                     a segmenter's boundary often bleeds onto the neighbor, and
+                     one stray pixel on the table edge puts a point 77 cm above
+                     a floor piece (association still uses the full mask)
         min_similarity   CLIP similarity two objects need for one mask covering
                          both to merge them (sofa parts ~0.88; mug vs table ~0.68,
                          but up to 0.76 after an ambiguous mug+table mask)
@@ -117,6 +133,7 @@ class ObjectMap:
         self.assoc_voxel = assoc_voxel
         self.min_overlap = min_overlap
         self.min_pixels = min_pixels
+        self.erode_pixels = erode_pixels
         self.min_similarity = min_similarity
         self.plane_tolerance = plane_tolerance
         self.objects: list[MapObject] = []
@@ -236,9 +253,19 @@ class ObjectMap:
             mask = mask & (frame.depth > 0)
             if mask.sum() < self.min_pixels:
                 continue
-            pts, valid = backproject(np.where(mask, frame.depth, 0), self.K, frame.T_wc)
+            # Two point sets from one mask:
+            #   full mask    -> association cells. Generous edges are what make
+            #                   neighboring pieces (floor tiles, sofa parts) touch.
+            #   eroded core  -> the stored shape. Without the ragged edge, a
+            #                   floor piece stays flat and a table keeps its size.
+            # The observation below keeps the full mask for CLIP crops.
+            full, _ = backproject(np.where(mask, frame.depth, 0), self.K, frame.T_wc)
+            keys = voxel_keys(full, self.assoc_voxel)
+            core = erode(mask, self.erode_pixels)
+            if not core.any():
+                core = mask
+            pts, valid = backproject(np.where(core, frame.depth, 0), self.K, frame.T_wc)
             pts, cols = voxel_downsample(pts, frame.rgb[valid], self.voxel)
-            keys = voxel_keys(pts, self.assoc_voxel)
 
             matches = self.associate(keys, feature)
             if not matches:
