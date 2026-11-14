@@ -11,6 +11,7 @@ segmenter) instead of eyeballing a few queries.
 
 Usage:
     python -m osm.eval_queries --out outputs/room0
+    python -m osm.eval_queries --out outputs/study --queries data/scenes/study/queries.json
 """
 
 from __future__ import annotations
@@ -47,9 +48,10 @@ QUERIES = {
 }
 
 
-def evaluate(searcher: Searcher, labels: dict[int, str], verbose: bool = True) -> dict:
+def evaluate(searcher: Searcher, labels: dict[int, str], verbose: bool = True,
+             queries: dict[str, list[str]] = QUERIES) -> dict:
     top1 = top3 = mrr = 0.0
-    for query, correct in QUERIES.items():
+    for query, correct in queries.items():
         ranked = [labels[oid] for oid, _, _ in searcher.rank(query)]
         # If the right object never made it into the map, it can't be found.
         rank = next((i for i, name in enumerate(ranked, 1) if name in correct), None)
@@ -60,18 +62,21 @@ def evaluate(searcher: Searcher, labels: dict[int, str], verbose: bool = True) -
         if verbose:
             mark = "--" if rank is None else "ok " if rank == 1 else f"#{rank:<2d}"
             print(f"  {mark} {query:30s} -> {', '.join(ranked[:3])}")
-    n = len(QUERIES)
+    n = len(queries)
     return {"top1": top1 / n, "top3": top3 / n, "mrr": mrr / n, "queries": n}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=Path("outputs/room0"))
+    parser.add_argument("--queries", type=Path,
+                        help="JSON {query: [correct labels]}; default: the primitive room's set")
     args = parser.parse_args()
+    queries = json.loads(args.queries.read_text()) if args.queries else QUERIES
 
     labels = {o["id"]: o["gt_label"] for o in
               json.loads((args.out / "objects.json").read_text())["objects"]}
-    scores = evaluate(Searcher.load(args.out), labels)
+    scores = evaluate(Searcher.load(args.out), labels, queries=queries)
     print(f"\ntop-1 {scores['top1']:.0%}   top-3 {scores['top3']:.0%}   "
           f"MRR {scores['mrr']:.2f}   ({scores['queries']} queries)")
 
