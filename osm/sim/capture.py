@@ -97,8 +97,8 @@ def geom_to_object(model: mujoco.MjModel) -> tuple[np.ndarray, dict[int, str]]:
     return geom_obj, labels
 
 
-def capture(out: Path, n_frames: int, width: int, height: int) -> None:
-    model = mujoco.MjModel.from_xml_path(str(SCENE))
+def capture(out: Path, n_frames: int, width: int, height: int, scene: Path = SCENE) -> None:
+    model = mujoco.MjModel.from_xml_path(str(scene))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=height, width=width)
     mocap_id = model.body(RIG).mocapid[0]
@@ -156,11 +156,13 @@ def capture(out: Path, n_frames: int, width: int, height: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=Path("data/room0"))
+    parser.add_argument("--scene", type=Path, default=SCENE,
+                        help="MuJoCo scene file (default: the primitive test room)")
     parser.add_argument("--frames", type=int, default=60)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     args = parser.parse_args()
-    capture(args.out, args.frames, args.width, args.height)
+    capture(args.out, args.frames, args.width, args.height, args.scene)
 
 
 if __name__ == "__main__":
