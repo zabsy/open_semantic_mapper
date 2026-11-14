@@ -111,7 +111,8 @@ def voxel_keys(points: np.ndarray, size: float) -> set:
 class ObjectMap:
     def __init__(self, K: Intrinsics, voxel: float = 0.02, assoc_voxel: float = 0.05,
                  min_overlap: float = 0.5, min_pixels: int = 100, erode_pixels: int = 2,
-                 min_similarity: float = 0.85, plane_tolerance: float = 0.01):
+                 min_similarity: float = 0.85, min_bridge_cells: int = 50,
+                 plane_tolerance: float = 0.01):
         """
         voxel        resolution of each object's stored points (meters)
         assoc_voxel  coarser grid used to compare a mask with objects; coarse cells
@@ -126,6 +127,8 @@ class ObjectMap:
         min_similarity   CLIP similarity two objects need for one mask covering
                          both to merge them (sofa parts ~0.88; mug vs table ~0.68,
                          but up to 0.76 after an ambiguous mug+table mask)
+        min_bridge_cells a mask must span at least this many association cells
+                         to join two objects (50 cells of 5 cm ~ 0.1 m^2)
         plane_tolerance  a point is on a plane if within this many meters of it
         """
         self.K = K
@@ -135,6 +138,7 @@ class ObjectMap:
         self.min_pixels = min_pixels
         self.erode_pixels = erode_pixels
         self.min_similarity = min_similarity
+        self.min_bridge_cells = min_bridge_cells
         self.plane_tolerance = plane_tolerance
         self.objects: list[MapObject] = []
         self._next_id = 0
@@ -275,10 +279,15 @@ class ObjectMap:
             else:
                 # A mask covering several objects that look alike means they
                 # were pieces of one thing seen from different angles: join them.
+                # Only a substantial mask counts as evidence: a 114-pixel sliver
+                # at the foot of a bookshelf (9 cells) touched the floor too,
+                # which says nothing about the two being one thing. Masks that
+                # correctly joined sofa parts spanned 86 to 885 cells.
                 obj = matches[0]
-                for other in matches[1:]:
-                    if self.similar(obj, other, self.min_similarity):
-                        self.merge(obj, other)
+                if len(keys) >= self.min_bridge_cells:
+                    for other in matches[1:]:
+                        if self.similar(obj, other, self.min_similarity):
+                            self.merge(obj, other)
                 obj.points, obj.colors = voxel_downsample(
                     np.concatenate([obj.points, pts]),
                     np.concatenate([obj.colors, cols]), self.voxel)
