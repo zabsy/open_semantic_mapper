@@ -5,3 +5,4 @@ pillow>=10.0
 torch>=2.2
 open_clip_torch>=2.24
 transformers>=4.40
+trimesh>=4.0
