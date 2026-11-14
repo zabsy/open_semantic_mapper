@@ -26,6 +26,12 @@ query "a potted plant". For background surfaces the surroundings mislead.
 Averaging several views makes the vector more stable: one view of a chair
 from behind can be ambiguous, five views from different angles are not.
 
+Objects seen in fewer than 3 frames are not embedded, so search ignores
+them. In practice they are fragments: a 50-pixel sliver of a chair cut off by
+the image border, whose crop is mostly surroundings and so matched nearly
+every query. In all test rooms every such object was a piece of something
+that also exists in full. (They stay in the map; only search skips them.)
+
 Usage (after python -m osm.objects):
     python -m osm.clip_features --data data/room0 --out outputs/room0
 Writes
@@ -127,11 +133,14 @@ def embed_masks(clip: Clip, rgb: np.ndarray, masks: list[np.ndarray]) -> np.ndar
     return _normalize(emb[:len(masks)] + emb[len(masks):])
 
 
-def embed_objects(seq: Sequence, objects_json: dict, masks: dict, clip: Clip, k: int = 5
+def embed_objects(seq: Sequence, objects_json: dict, masks: dict, clip: Clip, k: int = 5,
+                  min_views: int = 3
                   ) -> tuple[np.ndarray, np.ndarray, dict[int, list[np.ndarray]]]:
     ids, feats, all_crops = [], [], {}
     for obj in objects_json["objects"]:
         observations = objects_json["observations"][str(obj["id"])]
+        if len(observations) < min_views:
+            continue
         for i, ob in enumerate(observations):
             ob["index"] = i  # to find its mask after sorting
         views = best_views(observations, seq.K.width, seq.K.height, k)
@@ -170,15 +179,19 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=Path("data/room0"))
     parser.add_argument("--out", type=Path, default=Path("outputs/room0"))
     parser.add_argument("--views", type=int, default=5, help="crops per object")
+    parser.add_argument("--min-views", type=int, default=3,
+                        help="objects seen in fewer frames are left out of search")
     args = parser.parse_args()
 
     seq = Sequence(args.data)
     objects_json = json.loads((args.out / "objects.json").read_text())
     masks = dict(np.load(args.out / "masks.npz"))
-    ids, feats, crops = embed_objects(seq, objects_json, masks, Clip(), args.views)
+    ids, feats, crops = embed_objects(seq, objects_json, masks, Clip(), args.views,
+                                      args.min_views)
     np.savez(args.out / "features.npz", ids=ids, features=feats,
              model=MODEL, pretrained=PRETRAINED)
-    iio.imwrite(args.out / "crops.png", crop_sheet(objects_json["objects"], crops))
+    shown = [o for o in objects_json["objects"] if o["id"] in crops]
+    iio.imwrite(args.out / "crops.png", crop_sheet(shown, crops))
     print(f"Embedded {len(ids)} objects -> {args.out / 'features.npz'}")
 
 
