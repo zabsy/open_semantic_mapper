@@ -142,13 +142,16 @@ The query is embedded with the CLIP text encoder using the prompt
 creep into vague queries, so objects are ranked by **relevancy** as in LERF:
 
 ```
-relevancy = min over c in {object, things, stuff, texture} of
+relevancy = min over c in {object, things, stuff, texture, wall, floor} of
             exp(s_query) / (exp(s_query) + exp(s_c))        (temperature 10)
 ```
 
 "Does this object match the query better than it matches 'stuff'?" An object
 that matches everything also matches "stuff" and scores low; 0.5 means no
-preference.
+preference. "wall" and "floor" are added to LERF's four phrases: with SAM,
+walls end up as several pieces, and a wall piece with furniture-shaped holes
+cut out of its masked crop used to rank first for queries like "a sofa".
+Walls and floors themselves cannot be searched for as a result.
 
 ### 7. Evaluation (`osm/eval_queries.py`)
 
@@ -163,18 +166,30 @@ miss.
 
 | Room | Masks | Objects (real) | Top-1 | Top-3 | MRR |
 |---|---|---|---|---|---|
-| Primitive room | ground truth | 11 (11) | 83% | 94% | 0.89 |
-| Primitive room | SAM | 22 (11) | 78% | 89% | 0.85 |
-| Living room | ground truth | 14 (12) | 88% | 94% | 0.93 |
-| Living room | SAM | 25 (12) | 88% | 88% | 0.90 |
-| Study | ground truth | 20 (17) | 79% | 95% | 0.86 |
-| Study | SAM | 30 (17) | 63% | 79% | 0.72 |
+| Primitive room | ground truth | 11 (11) | 89% | 100% | 0.94 |
+| Primitive room | SAM | 22 (11) | 78% | 94% | 0.87 |
+| Living room | ground truth | 14 (12) | 88% | 100% | 0.93 |
+| Living room | SAM | 25 (12) | 88% | 88% | 0.91 |
+| Study | ground truth | 20 (17) | 84% | 95% | 0.90 |
+| Study | SAM | 30 (17) | 63% | 79% | 0.73 |
 
-Known weaknesses: in the study with SAM, the chest of drawers is effectively
-missing and "an office chair" confuses the other chairs. Objects are still
-over-split with SAM (about twice as many objects as real ones), mostly into
-large, clean parts. Segmentation plus embedding takes about 10 s per frame,
-so this runs offline, not in real time.
+Known weaknesses:
+
+* **Study with SAM.** The beige walls, grey floor and wooden cabinet look
+  alike to CLIP (0.85 to 0.96). At frame 29 one SAM mask spanning floor and
+  wall bridges the two; every later wall mask then matches the combined
+  object, which ends up holding the floor, all four walls, the shelf and the
+  cabinet (half its pixels are not floor). The chest of drawers is therefore
+  effectively missing, and "an office chair" confuses the other chairs.
+* **Tried and rejected:** blocking bridging for flat objects (many furniture
+  parts are flat too; objects 30 to 49 in the study), per-cell majority voting
+  (objects 30 to 88), and blocking bridging for objects wider than 3 m. The
+  last one does keep the study floor clean and raises study top-1 to 68%, but
+  drops the primitive room to 56%, so it is a net loss on these rooms.
+* Objects are over-split with SAM (about twice as many as real ones), mostly
+  into large, clean parts.
+* Segmentation plus embedding takes about 10 s per frame, so this runs
+  offline, not in real time.
 
 ## Usage
 
