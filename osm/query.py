@@ -15,6 +15,13 @@ i.e. "does this object match the query better than it matches 'stuff'?".
 An object that matches everything also matches "stuff", so it scores low.
 0.5 means no preference; higher is a better match.
 
+Besides LERF's four phrases we add "wall" and "floor". With a segmenter, walls
+end up as several pieces, and a wall piece with furniture cut out of it (gray,
+furniture-shaped holes in its masked crop) ranked first for "a sofa" or "a
+bookshelf". Now a wall piece must match the query better than it matches
+"wall", which it does not. The cost: walls and floors themselves cannot be
+searched for, which is fine for an object finder.
+
 Usage:
     python -m osm.query "something to sit on"
     python -m osm.query "a mug" "a red ball" --top 3
@@ -33,7 +40,7 @@ from osm.clip_features import Clip
 # CLIP was trained on image captions, so a caption-like prompt works better
 # than a bare word.
 TEMPLATE = "a photo of {}."
-CANONICAL = ["object", "things", "stuff", "texture"]
+CANONICAL = ["object", "things", "stuff", "texture", "wall", "floor"]
 
 
 class Searcher:
